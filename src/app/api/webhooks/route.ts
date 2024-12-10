@@ -1,15 +1,17 @@
 import { Webhook } from 'svix'
 import { headers } from 'next/headers'
+import {createOrUpdateUser, deleteUser} from '../../../lib/actions/user';
+import { clerkClient } from '@clerk/nextjs/server';
 
 export async function POST(req: Request) {
-  const SIGNING_SECRET = process.env.SIGNING_SECRET
+  const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET
 
-  if (!SIGNING_SECRET) {
+  if (!WEBHOOK_SECRET) {
     throw new Error('Erreur: Veuillez ajouter SIGNING_SECRET du tableau de bord Clerk à .env ou .env.local')
   }
 
   // Create new Svix instance with secret
-  const wh = new Webhook(SIGNING_SECRET)
+  const wh = new Webhook(WEBHOOK_SECRET)
 
   // Get headers
   const headerPayload = await headers()
@@ -46,18 +48,57 @@ export async function POST(req: Request) {
 
   // Do something with payload
   // For this guide, log payload to console
-  const { id } = evt.data
-  const eventType = evt.type
+  const { id } = evt?.data
+  const eventType = evt?.type
   console.log(`Webhook reçu avec l'ID ${id} et le type d'événement ${eventType}`)
   console.log('Charge utile du webhook payload:', body)
 
-  if (evt.type === 'user.created') {
-    console.log('userId:', evt.data.id)
+  if(eventType === 'user.created' || eventType === 'user.updated'){
+    const {
+      id,
+      first_name,
+      last_name,
+      image_url,
+      email_addresses,
+      username,
+    } = evt?.data;
+
+    try{
+      const user = await createOrUpdateUser(
+        id,
+        first_name,
+        last_name,
+        image_url,
+        email_addresses,
+        username,
+      );
+
+      if(user && eventType === 'user.created'){
+        try{
+          await clerkClient.users.updateUserMetadata(id, {
+            publicMetadata: {
+              userMongoId: user._id,
+              isAdmin: user.isAdmin
+            }
+          });
+        }catch(error){
+          console.log('Error de mis à jour user metadata', error);
+        }
+      }
+    }catch(error){
+        console.log('Error création ou de mis à jour user:', error);
+        return new Response('Erreur', {status: 400});
+    }
   }
 
-  if (evt.type === 'user.updated') {
-    console.log('user est mis à jour:', evt.data.id)
+  if(eventType === 'user.deleted'){
+    const { id } = evt?.data;
+    try{
+      await deleteUser(id);
+    }catch(error){
+      console.log('Error création ou de mis à jour user:', error);
+      return new Response('Erreur', {status: 400});
   }
-
-  return new Response('Webhook reçu', { status: 200 })
+  }
+  return new Response('', { status: 200 })
 }
